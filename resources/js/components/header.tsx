@@ -4,7 +4,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { cn } from '@/lib/utils';
 import { Link } from '@inertiajs/react';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import axios from 'axios';
 import {
@@ -64,6 +64,7 @@ export function Header({ className, auth }: HeaderProps) {
     const [mobileSelectedCategory, setMobileSelectedCategory] = useState<string | null>(null);
     const [categories, setCategories] = useState<ApiCategory[]>([]);
     const [categoriesLoading, setCategoriesLoading] = useState(false);
+    const [language, setLanguage] = useState<'Рус' | 'Каз'>('Рус');
 
     useEffect(() => {
         let timeoutId: NodeJS.Timeout;
@@ -90,52 +91,81 @@ export function Header({ className, auth }: HeaderProps) {
         };
     }, []);
 
-    // Fetch categories from API
-    useEffect(() => {
-        const fetchCategories = async () => {
-            setCategoriesLoading(true);
-            try {
-                const response = await axios.get('/api/proxy/categories');
-                
-                // Handle both formats: direct array or {status, data} object
-                let flatCategories: ApiCategory[] = [];
-                
-                if (Array.isArray(response.data)) {
-                    flatCategories = response.data;
-                } else if (response.data?.status && response.data?.data) {
-                    flatCategories = response.data.data;
-                } else {
-                    console.log('Unexpected response format or rate limited');
-                    return;
-                }
-                
-                // Build full tree recursively
-                const buildTree = (parentId: string | null, level: number): ApiCategory[] => {
-                    return flatCategories
-                        .filter(cat => {
-                            if (level === 1) {
-                                return cat.level === 1;
-                            }
-                            return cat.parent_id === parentId;
-                        })
-                        .map(cat => ({
-                            ...cat,
-                            children: buildTree(cat.id, (cat.level || 1) + 1)
-                        }));
-                };
-                
-                const rootCategories = buildTree(null, 1);
-                console.log('Root categories with children:', rootCategories.length, rootCategories);
-                setCategories(rootCategories);
-            } catch (err) {
-                console.error('Failed to fetch categories:', err);
-            } finally {
-                setCategoriesLoading(false);
-            }
-        };
+    // Fetch categories from API when the catalog is opened (or prefetch on hover).
+    const CATEGORIES_CACHE_KEY = 'categories_cache_v1';
+    const CATEGORIES_CACHE_TTL = 1000 * 60 * 10; // 10 minutes
+    const isFetchingRef = useRef(false);
 
-        fetchCategories();
-    }, []);
+    const fetchCategories = async (force = false) => {
+        // Use cache from localStorage when available and not forced
+        try {
+            if (!force && typeof window !== 'undefined') {
+                const raw = localStorage.getItem(CATEGORIES_CACHE_KEY);
+                if (raw) {
+                    const parsed = JSON.parse(raw);
+                    if (parsed?.ts && (Date.now() - parsed.ts) < CATEGORIES_CACHE_TTL && parsed?.data) {
+                        setCategories(parsed.data);
+                        return;
+                    }
+                }
+            }
+        } catch (e) {
+            // ignore cache errors
+        }
+
+        if (isFetchingRef.current) return;
+        isFetchingRef.current = true;
+        setCategoriesLoading(true);
+
+        try {
+            const response = await axios.get('/api/proxy/categories');
+            let flatCategories: ApiCategory[] = [];
+
+            if (Array.isArray(response.data)) {
+                flatCategories = response.data;
+            } else if (response.data?.status && response.data?.data) {
+                flatCategories = response.data.data;
+            } else {
+                console.log('Unexpected response format or rate limited');
+                return;
+            }
+
+            const buildTree = (parentId: string | null, level: number): ApiCategory[] => {
+                return flatCategories
+                    .filter(cat => {
+                        if (level === 1) {
+                            return cat.level === 1;
+                        }
+                        return cat.parent_id === parentId;
+                    })
+                    .map(cat => ({
+                        ...cat,
+                        children: buildTree(cat.id, (cat.level || 1) + 1)
+                    }));
+            };
+
+            const rootCategories = buildTree(null, 1);
+            setCategories(rootCategories);
+
+            // cache result
+            try {
+                if (typeof window !== 'undefined') {
+                    localStorage.setItem(CATEGORIES_CACHE_KEY, JSON.stringify({ ts: Date.now(), data: rootCategories }));
+                }
+            } catch (e) { /* ignore */ }
+        } catch (err) {
+            console.error('Failed to fetch categories:', err);
+        } finally {
+            isFetchingRef.current = false;
+            setCategoriesLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        if (isCatalogOpen && categories.length === 0) {
+            fetchCategories();
+        }
+    }, [isCatalogOpen]);
 
     return (
         <header className={cn('w-full bg-white border-b border-gray-200 md:sticky md:top-0 z-50', className)}>
@@ -146,15 +176,15 @@ export function Header({ className, auth }: HeaderProps) {
                     isScrolled ? "h-0 opacity-0 pointer-events-none" : "py-2 opacity-100"
                 )}
             >
-                <div className="mx-auto flex h-10 max-w-[1400px] items-center justify-between px-6">
+                    <div className="mx-auto flex h-12 max-w-[1400px] items-center justify-between px-6">
                     {/* Left Section */}
-                    <div className="flex items-center space-x-6 text-sm">
+                    <div className="flex items-center space-x-6 text-base">
                         <DropdownMenu>
                             <DropdownMenuTrigger asChild>
-                                <button className="group flex items-center space-x-1.5 font-medium text-gray-600 transition-all hover:text-[#1e3a8a]">
-                                    <HugeiconsIcon icon={Location01Icon} className="h-4 w-4 transition-transform group-hover:scale-110" />
-                                    <span>{selectedCity}</span>
-                                    <HugeiconsIcon icon={ArrowDown01Icon} className="h-3.5 w-3.5 transition-transform group-hover:rotate-180" />
+                                <button className="group flex items-center space-x-1.5 font-medium bg-[#EBEEF6] px-2 py-2 rounded-xl text-gray-600 transition-all hover:text-[#1e3a8a]">
+                                    {/* <HugeiconsIcon icon={Location01Icon} className="h-4 w-4 transition-transform group-hover:scale-110 text-[#1e3a8a]" /> */}
+                                    <span className="font-semibold leading-3">{selectedCity}</span>
+                                    <HugeiconsIcon icon={ArrowDown01Icon} className="h-3.5 w-3.5 transition-transform group-hover:rotate-180 text-blue-500" />
                                 </button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="start" className="w-48">
@@ -164,7 +194,7 @@ export function Header({ className, auth }: HeaderProps) {
                                         onClick={() => setSelectedCity(city)}
                                         className={cn(
                                             "cursor-pointer",
-                                            selectedCity === city && "bg-blue-50 text-[#1e3a8a] font-semibold"
+                                            selectedCity === city && "bg-blue-50 text-blue-500 font-semibold"
                                         )}
                                     >
                                         {city}
@@ -174,48 +204,62 @@ export function Header({ className, auth }: HeaderProps) {
                         </DropdownMenu>
                         <Link
                             href="/delivery"
-                            className="group flex items-center space-x-1.5 font-medium text-gray-600 transition-all hover:text-[#1e3a8a]"
+                            className="group flex items-center space-x-1.5 font-semibold text-blue-500 transition-all hover:text-[#1e3a8a]"
                         >
-                            <HugeiconsIcon icon={DeliveryTruck01Icon} className="h-4 w-4 transition-transform group-hover:scale-110" />
-                            <span>Доставка</span>
+                            <HugeiconsIcon icon={DeliveryTruck01Icon} className="h-4 w-4 transition-transform group-hover:scale-110 text-gray-600" />
+                            <span className="font-semibold text-black">Доставка</span>
                         </Link>
                         <Link
                             href="/warranty"
-                            className="group flex items-center space-x-1.5 font-medium text-gray-600 transition-all hover:text-[#1e3a8a]"
+                            className="group flex items-center space-x-1.5 font-semibold "
                         >
-                            <HugeiconsIcon icon={Award01Icon} className="h-4 w-4 transition-transform group-hover:scale-110" />
-                            <span>Гарантия</span>
+                            <HugeiconsIcon icon={Award01Icon} className="h-4 w-4 transition-transform group-hover:scale-110 text-gray-600" />
+                            <span className="font-semibold text-black">Гарантия</span>
                         </Link>
                     </div>
 
                     {/* Right Section */}
                     <div className="flex items-center space-x-4">
-                        <Link
+                        {/* <Link
                             href="#"
-                            className="group flex items-center space-x-1.5 text-sm font-medium text-gray-600 transition-all hover:text-[#1e3a8a]"
+                            className="group flex items-center space-x-1.5 text-base font-medium text-gray-600 transition-all hover:text-[#1e3a8a]"
                         >
                             <HugeiconsIcon icon={GiftIcon} className="h-4 w-4 transition-transform group-hover:scale-110" />
                             <span>Акции</span>
                         </Link>
                         <Link
                             href="#"
-                            className="group flex items-center space-x-1.5 text-sm font-medium text-gray-600 transition-all hover:text-[#1e3a8a]"
+                            className="group flex items-center space-x-1.5 text-base font-medium text-gray-600 transition-all hover:text-[#1e3a8a]"
                         >
                             <HugeiconsIcon icon={HelpCircleIcon} className="h-4 w-4 transition-transform group-hover:scale-110" />
                             <span>Помощь</span>
-                        </Link>
-                        <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                                <button className="flex items-center px-3 py-1.5 text-sm font-semibold text-gray-600 bg-white transition-all hover:bg-gray-50 hover:text-[#1e3a8a] rounded-lg border border-gray-200">
-                                    Рус
-                                    <HugeiconsIcon icon={ArrowDown01Icon} className="ml-1 h-4 w-4" />
-                                </button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent>
-                                <DropdownMenuItem>Рус</DropdownMenuItem>
-                                <DropdownMenuItem>Каз</DropdownMenuItem>
-                            </DropdownMenuContent>
-                        </DropdownMenu>
+                        </Link> */}
+                        <div className="flex items-center space-x-2">
+                            <button
+                                onClick={() => setLanguage('Рус')}
+                                aria-pressed={language === 'Рус'}
+                                className={cn(
+                                    "px-3 py-1.5 rounded-full transition-all text-sm",
+                                    language === 'Рус'
+                                        ? "border border-[#1e3a8a] text-[#1e3a8a] font-semibold bg-white"
+                                        : "border border-gray-200 text-gray-600 bg-white hover:bg-gray-50"
+                                )}
+                            >
+                                Рус
+                            </button>
+                            <button
+                                onClick={() => setLanguage('Каз')}
+                                aria-pressed={language === 'Каз'}
+                                className={cn(
+                                    "px-3 py-1.5 rounded-full transition-all text-sm",
+                                    language === 'Каз'
+                                        ? "border border-[#1e3a8a] text-[#1e3a8a] font-semibold bg-white"
+                                        : "border border-gray-200 text-gray-600 bg-white hover:bg-gray-50"
+                                )}
+                            >
+                                Каз
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -224,7 +268,7 @@ export function Header({ className, auth }: HeaderProps) {
             <div 
                 className={cn(
                     "mx-auto max-w-[1400px] px-4 md:px-6 transition-all duration-500 ease-in-out",
-                    isScrolled ? "py-2" : "py-3 md:py-5"
+                    isScrolled ? "py-3" : "py-4 md:py-7"
                 )}
             >
                 <div className="flex items-center justify-between gap-2 md:gap-6">
@@ -234,7 +278,7 @@ export function Header({ className, auth }: HeaderProps) {
                             <Button
                                 variant="ghost"
                                 size="icon"
-                                className="md:hidden h-10 w-10"
+                                className="md:hidden h-12 w-12"
                             >
                                 <HugeiconsIcon icon={Menu01Icon} className="h-5 w-5 text-[#1e3a8a]" />
                             </Button>
@@ -264,7 +308,7 @@ export function Header({ className, auth }: HeaderProps) {
                                                             </div>
                                                             <div>
                                                                 <div className="font-semibold text-gray-900">{auth.user.name}</div>
-                                                                <div className="text-xs text-gray-500">Мой профиль</div>
+                                                                <div className="text-sm text-gray-500">Мой профиль</div>
                                                             </div>
                                                         </>
                                                     ) : (
@@ -276,7 +320,7 @@ export function Header({ className, auth }: HeaderProps) {
                                                             </div>
                                                             <div>
                                                                 <div className="font-semibold text-gray-900">Войти</div>
-                                                                <div className="text-xs text-gray-500">В личный кабинет</div>
+                                                                <div className="text-sm text-gray-500">В личный кабинет</div>
                                                             </div>
                                                         </>
                                                     )}
@@ -322,10 +366,10 @@ export function Header({ className, auth }: HeaderProps) {
                                                     <DropdownMenuTrigger asChild>
                                                         <button className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-gray-50">
                                                             <div className="flex items-center gap-3">
-                                                                <HugeiconsIcon icon={Location01Icon} className="w-5 h-5 text-gray-600" />
-                                                                <span className="text-gray-700">{selectedCity}</span>
+                                                                <HugeiconsIcon icon={Location01Icon} className="w-5 h-5 text-[#1e3a8a]" />
+                                                                <span className="font-semibold text-[#1e3a8a]">{selectedCity}</span>
                                                             </div>
-                                                            <HugeiconsIcon icon={ArrowDown01Icon} className="w-4 h-4 text-gray-400" />
+                                                            <HugeiconsIcon icon={ArrowDown01Icon} className="w-4 h-4 text-[#1e3a8a]" />
                                                         </button>
                                                     </DropdownMenuTrigger>
                                                     <DropdownMenuContent align="start" className="w-48">
@@ -397,22 +441,21 @@ export function Header({ className, auth }: HeaderProps) {
                                                 ) : (
                                                     categories.map((category) => (
                                                         <Link
-                                                            key={category.id}
-                                                            href={`/products?category=${category.id}`}
-                                                            onClick={() => {
-                                                                setIsMobileMenuOpen(false);
-                                                                setMobileSelectedCategory(null);
-                                                            }}
-                                                            className="flex items-center gap-3 p-3 rounded-lg hover:bg-gray-50"
-                                                        >
-                                                            <HugeiconsIcon icon={Folder01Icon} className="w-5 h-5 text-gray-600" />
-                                                            <span className="text-gray-700">{category.name}</span>
-                                                            {category.children && category.children.length > 0 && (
-                                                                <span className="ml-auto text-xs text-gray-400">
-                                                                    {category.children.length}
-                                                                </span>
-                                                            )}
-                                                        </Link>
+                                                                key={category.id}
+                                                                href={`/products?category=${category.id}`}
+                                                                onClick={() => {
+                                                                    setIsMobileMenuOpen(false);
+                                                                    setMobileSelectedCategory(null);
+                                                                }}
+                                                                className="flex items-center gap-2 p-3 rounded-lg hover:bg-gray-50"
+                                                            >
+                                                                <span className="text-gray-700">{category.name}</span>
+                                                                {category.children && category.children.length > 0 && (
+                                                                    <span className="ml-auto text-xs text-gray-400">
+                                                                        {category.children.length}
+                                                                    </span>
+                                                                )}
+                                                            </Link>
                                                     ))
                                                 )}
                                             </div>
@@ -423,28 +466,41 @@ export function Header({ className, auth }: HeaderProps) {
                         </SheetContent>
                     </Sheet>
                     {/* Logo */}
-                    <Link href="/" className="group flex-shrink-0">
-                        <div className="flex items-center space-x-3">
-                            <div className="relative">
+                    <Link href="/" className="group flex-shrink-0" aria-label="Swoo Tech Mart Home">
+                        <div className="flex items-center space-x-2">
+                            <div className={cn("relative transition-all duration-300 flex-shrink-0 rounded-lg overflow-hidden", isScrolled ? "w-8 h-8" : "w-12 h-12")}>
+                                <div className="w-full h-full flex items-center justify-center">
+                                    {/* Simple smile icon */}
+                                    <svg width="45" height="45" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <rect width="20" height="20" rx="6" fill="blue" />
+                                        <path d="M6 8.5C6.5 9.5 7.25 10 10 10C12.75 10 13.5 9.5 14 8.5" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                                    </svg>
+                                </div>
+                            </div>
+
+                            <div className="flex flex-col leading-[1]">
                                 <span className={cn(
-                                    "relative font-bold text-[#1e3a8a] transition-all duration-500 ease-in-out inline-block uppercase",
+                                    "font-bold text-gray-900 transition-all duration-500 ease-in-out leading-0 uppercase",
                                     isScrolled ? "text-sm md:text-base" : "text-base md:text-xl"
                                 )}>
-                                    Techno expert
+                                    Techno
                                 </span>
+                                <span className="text-xs text-gray-700 tracking-wide uppercase">Expert</span>
                             </div>
                         </div>
                     </Link>
 
                     {/* Catalog Button & Search - Desktop */}
-                    <div className="hidden md:flex flex-1 items-center gap-3">
+                    <div className="hidden md:flex flex-1 items-center gap-3 border-2 border-blue-600 rounded-2xl px-1 py-0.5">
                         <div className="relative">
                             <Button
                                 onClick={() => setIsCatalogOpen(!isCatalogOpen)}
+                                onMouseEnter={() => fetchCategories()}
+                                onFocus={() => fetchCategories()}
                                 className={cn(
-                                    "w-[8rem] text-white transition-all duration-300 font-semibold whitespace-nowrap rounded-sm",
+                                    "w-[8rem] text-white transition-all duration-300 font-semibold whitespace-nowrap rounded-xl",
                                     isScrolled ? "h-10" : "h-11",
-                                    isCatalogOpen ? "bg-gray-600 hover:bg-gray-700" : "bg-blue-700 hover:bg-blue-800"
+                                    isCatalogOpen ? "bg-blue-800 hover:bg-blue-900" : "bg-blue-600 hover:bg-blue-700"
                                 )}
                                 size="lg"
                                 aria-label={`${isCatalogOpen ? "Закрыть" : "Открыть"} каталог`}
@@ -461,17 +517,17 @@ export function Header({ className, auth }: HeaderProps) {
                                 type="search"
                                 placeholder="Поиск товаров, брендов, категорий..."
                                 className={cn(
-                                    "w-full !bg-white !shadow-none rounded-sm border-1 border-gray-200 bg-gray-50/50 pr-12 text-sm font-medium transition-all duration-500 ease-in-out focus:border-[#1e3a8a] focus:bg-white focus:ring-2 focus:ring-[#1e3a8a]/20 placeholder:text-gray-400",
+                                    "w-full bg-white shadow-none text-base font-medium border-none focus:outline-none focus:ring-0 placeholder:text-gray-400",
                                     isScrolled ? "h-10" : "h-12"
                                 )}
                             />
-                            <Button
+                            {/* <Button
                                 size="icon"
                                 variant="ghost"
                                 className="absolute right-2 top-1/2 size-8 -translate-y-1/2 rounded-lg text-gray-400 hover:bg-[#1e3a8a] hover:text-white transition-all"
                             >
                                 <HugeiconsIcon icon={SearchVisualIcon} className="h-4 w-4" />
-                            </Button>
+                            </Button> */}
                         </div>
                     </div>
 
@@ -483,7 +539,7 @@ export function Header({ className, auth }: HeaderProps) {
                             <Button
                                 variant="ghost"
                                 className={cn(
-                                    "group relative flex flex-col items-center justify-center rounded-xl transition-all duration-500 ease-in-out hover:bg-transparent",
+                                    "group relative flex flex-col items-center justify-center rounded-2xl transition-all duration-500 ease-in-out bg-gray-50 hover:bg-gray-100",
                                     isScrolled ? "h-10 min-w-[70px]" : "h-16 min-w-[90px]"
                                 )}
                             >
@@ -491,13 +547,13 @@ export function Header({ className, auth }: HeaderProps) {
                                     <>
                                         <div className={cn(
                                             "rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white font-bold transition-all duration-500 ease-in-out aspect-square",
-                                            isScrolled ? "w-5 text-[10px]" : "w-7 text-sm"
+                                            isScrolled ? "w-5 text-xs" : "w-7 text-base"
                                         )}>
                                             {auth.user.name.charAt(0).toUpperCase()}
                                         </div>
                                         <span className={cn(
                                             "font-semibold text-gray-700 transition-all duration-500 ease-in-out group-hover:text-[#1e3a8a]",
-                                            isScrolled ? "text-[10px] mt-0.5" : "text-xs"
+                                            isScrolled ? "text-xs mt-0.5" : "text-sm"
                                         )}>
                                             {auth.user.name.split(' ')[0]}
                                         </span>
@@ -507,7 +563,7 @@ export function Header({ className, auth }: HeaderProps) {
                                         <HugeiconsIcon icon={UserIcon} className={cn("transition-all duration-500 ease-in-out", isScrolled ? "size-5" : "size-6")} />
                                         <span className={cn(
                                             "font-semibold text-gray-700 transition-all duration-500 ease-in-out group-hover:text-[#1e3a8a]",
-                                            isScrolled ? "text-[10px] mt-0.5" : "text-xs"
+                                            isScrolled ? "text-xs mt-0.5" : "text-sm"
                                         )}>
                                             Войти
                                         </span>
@@ -520,7 +576,7 @@ export function Header({ className, auth }: HeaderProps) {
                             <Button
                                 variant="ghost"
                                 className={cn(
-                                    "group relative flex flex-col items-center justify-center rounded-xl transition-all duration-500 ease-in-out hover:bg-transparent",
+                                    "group relative flex flex-col items-center justify-center rounded-2xl transition-all duration-500 ease-in-out bg-gray-50 hover:bg-gray-100",
                                     isScrolled ? "h-10 min-w-[70px]" : "h-16 min-w-[90px]"
                                 )}
                             >
@@ -528,7 +584,7 @@ export function Header({ className, auth }: HeaderProps) {
 
                                 <span className={cn(
                                     "font-semibold text-gray-700 transition-all duration-500 ease-in-out group-hover:text-[#1e3a8a]",
-                                    isScrolled ? "text-[10px] mt-0.5" : "text-xs"
+                                    isScrolled ? "text-xs mt-0.5" : "text-sm"
                                 )}>
                                     Избранное
                                 </span>
@@ -538,7 +594,7 @@ export function Header({ className, auth }: HeaderProps) {
                             <Button
                                 variant="ghost"
                                 className={cn(
-                                    "group relative flex flex-col items-center justify-center rounded-xl transition-all duration-500 ease-in-out hover:bg-transparent",
+                                    "group relative flex flex-col items-center justify-center rounded-2xl transition-all duration-500 ease-in-out bg-gray-50 hover:bg-gray-100",
                                     isScrolled ? "h-10 min-w-[70px]" : "h-16 min-w-[90px]"
                                 )}
                             >
@@ -547,14 +603,14 @@ export function Header({ className, auth }: HeaderProps) {
 
                                     <span className={cn(
                                         "absolute top-3 -right-3 flex items-center justify-center rounded-full bg-sky-400 font-bold text-white ring-2 ring-white transition-all duration-500 ease-in-out",
-                                        isScrolled ? "h-3.5 w-3.5 text-[9px]" : "h-4 w-4 text-[10px]"
+                                        isScrolled ? "h-3.5 w-3.5 text-xs" : "h-4 w-4 text-sm"
                                     )}>
                                         0
                                     </span>
                                 </div>
                                 <span className={cn(
                                     "font-semibold text-gray-700 transition-all duration-500 ease-in-out group-hover:text-[#1e3a8a]",
-                                    isScrolled ? "text-[10px]" : "text-xs"
+                                    isScrolled ? "text-xs" : "text-sm"
                                 )}>
                                     Корзина
                                 </span>
@@ -608,7 +664,7 @@ export function Header({ className, auth }: HeaderProps) {
                                     <div className="space-y-0.5 border-r border-gray-100 pr-4 max-h-[400px] overflow-y-auto">
                                         {categories.map((category) => {
                                             return (
-                                                <button
+                                                        <button
                                                     key={category.id}
                                                     onMouseEnter={() => setSelectedCategory(category.id)}
                                                     className={cn(
@@ -618,9 +674,8 @@ export function Header({ className, auth }: HeaderProps) {
                                                             : "hover:bg-gray-50"
                                                     )}
                                                 >
-                                                    <div className="flex items-center gap-2.5">
-                                                        <HugeiconsIcon icon={Folder01Icon} className="w-4 h-4 text-gray-500" />
-                                                        <span className="text-sm text-gray-700">
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="text-base text-gray-700">
                                                             {category.name}
                                                         </span>
                                                     </div>
@@ -642,7 +697,7 @@ export function Header({ className, auth }: HeaderProps) {
                                                         <div key={subcat.id}>
                                                             <Link
                                                                 href={`/products?category=${subcat.id}`}
-                                                                className="font-semibold text-gray-900 mb-2 text-sm hover:text-[#1e3a8a] transition-colors block"
+                                                                className="font-semibold text-gray-900 mb-2 text-base hover:text-[#1e3a8a] transition-colors block"
                                                                 onClick={() => setIsCatalogOpen(false)}
                                                             >
                                                                 {subcat.name}
@@ -653,7 +708,7 @@ export function Header({ className, auth }: HeaderProps) {
                                                                         <li key={item.id}>
                                                                             <Link
                                                                                 href={`/products?category=${item.id}`}
-                                                                                className="text-sm text-gray-600 hover:text-[#1e3a8a] transition-colors block"
+                                                                                className="text-base text-gray-600 hover:text-[#1e3a8a] transition-colors block"
                                                                                 onClick={() => setIsCatalogOpen(false)}
                                                                             >
                                                                                 {item.name}
@@ -664,7 +719,7 @@ export function Header({ className, auth }: HeaderProps) {
                                                                         <li>
                                                                             <Link
                                                                                 href={`/products?category=${subcat.id}`}
-                                                                                className="text-sm text-[#1e3a8a] hover:underline transition-colors block"
+                                                                                className="text-base text-[#1e3a8a] hover:underline transition-colors block"
                                                                                 onClick={() => setIsCatalogOpen(false)}
                                                                             >
                                                                                 Ещё {subcat.children.length - 5}...
@@ -678,9 +733,9 @@ export function Header({ className, auth }: HeaderProps) {
                                             </div>
                                         )}
                                         {!selectedCategory && (
-                                            <div className="flex items-center justify-center h-full text-gray-400 text-sm">
-                                                <p>Наведите на категорию</p>
-                                            </div>
+                                                <div className="flex items-center justify-center h-full text-gray-400 text-base">
+                                                    <p>Наведите на категорию</p>
+                                                </div>
                                         )}
                                     </div>
                                 </div>
